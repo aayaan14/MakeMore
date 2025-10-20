@@ -1,18 +1,19 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import sys
 
 # hyperparameters
-batch_size = 32  # how many independent sequences will we process in parallel?
+batch_size = 16  # how many independent sequences will we process in parallel?
 block_size = 128 # what is the maximum context length for predictions?
-max_iters = 10000
+max_iters = 5000
 eval_interval = 500
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200  
-n_embd = 384
-n_head = 6 # each head gets 384/6 = 64 embeddings
-n_layer = 6
+n_embd = 256
+n_head = 4 # each head gets 384/6 = 64 embeddings
+n_layer = 4
 dropout = 0.2
 # ------------
 
@@ -184,26 +185,61 @@ class LanguageModel(nn.Module):
 model = LanguageModel()
 m = model.to(device)
 
-# create a PyTorch optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-
-for iter in range(max_iters):
+# Check command line arguments
+if len(sys.argv) > 1 and sys.argv[1] == 'generate':
+    # Load mode
+    try:
+        checkpoint = torch.load('shakespeare_model.pt', map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+        print(f"Model loaded! Val loss: {checkpoint['val_loss']:.4f}\n")
+        
+        while True:
+            prompt = input("\nEnter prompt (or 'quit'): ")
+            if prompt.lower() == 'quit':
+                break
+            
+            if prompt.strip():
+                context = torch.tensor([encode(prompt)], dtype=torch.long, device=device)
+            else:
+                context = torch.zeros((1, 1), dtype=torch.long, device=device)
+            
+            with torch.no_grad():
+                generated = model.generate(context, max_new_tokens=10000)
+                print("\n" + "="*50)
+                print(decode(generated[0].tolist()))
+                print("="*50)
+    except FileNotFoundError:
+        print("No saved model found! Train first with: python script.py")
+else:
+    # Training mode
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     
-    # every once in a while evaluate the loss on train and val sets
-    if iter % eval_interval == 0:
-        losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+    for iter in range(max_iters):
+        if iter % eval_interval == 0:
+            losses = estimate_loss()
+            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        
+        xb, yb = get_batch('train')
+        logits, loss = model(xb, yb)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
     
-    # sample a batch of data
-    xb, yb = get_batch('train')
+    # Final evaluation
+    losses = estimate_loss()
+    print(f"\nFinal: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
     
-    # evaluate the loss
-    logits, loss = model(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+    # Save the model
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'train_loss': losses['train'],
+        'val_loss': losses['val'],
+    }, 'shakespeare_model.pt')
+    print("Model saved to shakespeare_model.pt!")
     
-# generate from the model
-context = torch.zeros((1, 1), dtype=torch.long, device=device)
-print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
-    
+    # Generate sample
+    print("\nSample generation:")
+    context = torch.zeros((1, 1), dtype=torch.long, device=device)
+    print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
